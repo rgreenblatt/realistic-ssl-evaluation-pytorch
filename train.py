@@ -84,8 +84,8 @@ condition["number_of_data"] = {
 class RandomSampler(torch.utils.data.Sampler):
     """ sampling without replacement """
 
+    # pylint: disable=super-init-not-called
     def __init__(self, num_data, num_sample):
-        super().__init__()
         iterations = num_sample // num_data + 1
         self.indices = torch.cat([
             torch.randperm(num_data) for _ in range(iterations)
