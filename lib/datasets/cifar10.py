@@ -1,9 +1,11 @@
-import numpy as np
 import os
+import numpy as np
+
 
 class CIFAR10:
     def __init__(self, root, split="l_train"):
-        self.dataset = np.load(os.path.join(root, "cifar10", split+".npy"), allow_pickle=True).item()
+        self.dataset = np.load(os.path.join(root, "cifar10", split + ".npy"),
+                               allow_pickle=True).item()
 
     def __getitem__(self, idx):
         image = self.dataset["images"][idx]
