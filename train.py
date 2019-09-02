@@ -266,7 +266,7 @@ for l_data, u_data in zip(l_loader, u_loader):
                     s = time.time()
             acc = sum_acc / float(len(val_dataset))
             print()
-            print("varidation accuracy : {}".format(acc))
+            print("validation accuracy : {}".format(acc))
             # test
             if maximum_val_acc < acc:
                 print("### test ###")
