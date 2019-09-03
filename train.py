@@ -10,45 +10,46 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from tensorboardX import SummaryWriter
 
-from lib import wrn, transform
+from build_dataset import build_dataset, add_args_to_parser, get_dataset_path
+from lib import wrn, transform, utils
 from config import config
 
 
+class TrainArgParser(utils.BaseParser):
+    def build_parser(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--alg",
+            "-a",
+            default="VAT",
+            type=str,
+            help="ssl algorithm : [supervised, PI, MT, VAT, PL, ICT]")
+        parser.add_argument(
+            "--em",
+            default=0,
+            type=float,
+            help=
+            "coefficient of entropy minimization. If you try VAT + EM, set 0.06"
+        )
+        parser.add_argument('--name', default="run")
+        parser.add_argument("--validation",
+                            default=25000,
+                            type=int,
+                            help="validate at this interval (default 25000)")
+        parser.add_argument("--output",
+                            "-o",
+                            default="./exp_res",
+                            type=str,
+                            help="output dir")
+        add_args_to_parser(parser)
+
+        return parser
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--alg",
-        "-a",
-        default="VAT",
-        type=str,
-        help="ssl algorithm : [supervised, PI, MT, VAT, PL, ICT]")
-    parser.add_argument(
-        "--em",
-        default=0,
-        type=float,
-        help=
-        "coefficient of entropy minimization. If you try VAT + EM, set 0.06")
-    parser.add_argument("--validation",
-                        default=25000,
-                        type=int,
-                        help="validate at this interval (default 25000)")
-    parser.add_argument("--dataset",
-                        "-d",
-                        default="svhn",
-                        type=str,
-                        help="dataset name : [svhn, cifar10]")
-    parser.add_argument("--root",
-                        "-r",
-                        default="data",
-                        type=str,
-                        help="dataset dir")
-    parser.add_argument("--output",
-                        "-o",
-                        default="./exp_res",
-                        type=str,
-                        help="output dir")
-    args = parser.parse_args()
+    args = TrainArgParser()
 
     if torch.cuda.is_available():
         device = "cuda"
@@ -59,23 +60,49 @@ def main():
     condition = {}
     exp_name = ""
 
-    print("dataset : {}".format(args.dataset))
     condition["dataset"] = args.dataset
-    exp_name += str(args.dataset) + "_"
+    exp_name += str(args.dataset)
+
+    condition["algorithm"] = args.alg
+    exp_name += "_" + str(args.alg)
+
+    if args.em > 0:
+        exp_name += "_em"
+    condition["entropy_maximization"] = args.em
+
+    base_save_path = os.path.join("train_output", exp_name)
+    run_num = 0
+    get_save_path = lambda: os.path.join(base_save_path, args.name + "_{}".
+                                         format(run_num))
+    while os.path.exists(get_save_path()):
+        run_num += 1
+
+    save_path = get_save_path()
+
+    writer = SummaryWriter(log_dir=os.path.join(save_path, "tb"))
+    writer.add_text('args', args.as_markdown(), 0)
+
+    logger = utils.get_logger(os.path.join(save_path, "train.log"))
+    args.print_params(logger.info)
+
+    build_dataset(args.dataset, nlabels=args.nlabels)
 
     dataset_cfg = config[args.dataset]
     transform_fn = transform.transform(
         *dataset_cfg["transform"])  # transform function (flip, crop, noise)
 
-    l_train_dataset = dataset_cfg["dataset"](args.root, "l_train")
-    u_train_dataset = dataset_cfg["dataset"](args.root, "u_train")
-    val_dataset = dataset_cfg["dataset"](args.root, "val")
-    test_dataset = dataset_cfg["dataset"](args.root, "test")
+    dataset_path = get_dataset_path(args.dataset, args.seed, args.nlabels)
 
-    print("labeled data : {}, unlabeled data : {}, training data : {}".format(
-        len(l_train_dataset), len(u_train_dataset),
-        len(l_train_dataset) + len(u_train_dataset)))
-    print("validation data : {}, test data : {}".format(
+    l_train_dataset = dataset_cfg["dataset"](dataset_path, "l_train")
+    u_train_dataset = dataset_cfg["dataset"](dataset_path, "u_train")
+    val_dataset = dataset_cfg["dataset"](dataset_path, "val")
+    test_dataset = dataset_cfg["dataset"](dataset_path, "test")
+
+    logger.info(
+        "labeled data : {}, unlabeled data : {}, training data : {}".format(
+            len(l_train_dataset), len(u_train_dataset),
+            len(l_train_dataset) + len(u_train_dataset)))
+    logger.info("validation data : {}, test data : {}".format(
         len(val_dataset), len(test_dataset)))
     condition["number_of_data"] = {
         "labeled": len(l_train_dataset),
@@ -114,10 +141,6 @@ def main():
                               len(l_train_dataset),
                               shared_cfg["iteration"] * batch_size))
 
-    print("algorithm : {}".format(args.alg))
-    condition["algorithm"] = args.alg
-    exp_name += str(args.alg) + "_"
-
     u_loader = DataLoader(u_train_dataset,
                           shared_cfg["batch_size"] // 2,
                           drop_last=True,
@@ -128,22 +151,18 @@ def main():
     val_loader = DataLoader(val_dataset, 128, shuffle=False, drop_last=False)
     test_loader = DataLoader(test_dataset, 128, shuffle=False, drop_last=False)
 
-    print("maximum iteration : {}".format(min(len(l_loader), len(u_loader))))
+    logger.info("maximum iteration : {}".format(
+        min(len(l_loader), len(u_loader))))
 
     alg_cfg = config[args.alg]
-    print("parameters : ", alg_cfg)
+    logger.info("parameters : {}".format(alg_cfg))
     condition["h_parameters"] = alg_cfg
-
-    if args.em > 0:
-        print("entropy minimization : {}".format(args.em))
-        exp_name += "em_"
-    condition["entropy_maximization"] = args.em
 
     model = wrn.WRN(2, dataset_cfg["num_classes"], transform_fn).to(device)
     optimizer = optim.Adam(model.parameters(), lr=alg_cfg["lr"])
 
     trainable_paramters = sum([p.data.nelement() for p in model.parameters()])
-    print("trainable parameters : {}".format(trainable_paramters))
+    logger.info("trainable parameters : {}".format(trainable_paramters))
 
     # pylint: disable=ungrouped-imports
     if args.alg == "VAT":  # virtual adversarial training
@@ -175,9 +194,11 @@ def main():
     else:
         raise ValueError("{} is unknown algorithm".format(args.alg))
 
-    print()
+    logger.info("### start training ###")
     iteration = 0
     maximum_val_acc = 0
+    train_cls_loss = utils.AverageMeter()
+    train_ssl_loss = utils.AverageMeter()
     s = time.time()
     for l_data, u_data in zip(l_loader, u_loader):
         iteration += 1
@@ -223,22 +244,29 @@ def main():
         loss.backward()
         optimizer.step()
 
+        n = target.size(0)
+        train_cls_loss.update(cls_loss.item(), n)
+        train_ssl_loss.update(ssl_loss.item(), n)
+
         if args.alg == "MT" or args.alg == "ICT":
             # parameter update with exponential moving average
             ssl_obj.moving_average(model.parameters())
         # display
-        if iteration == 1 or (iteration % 100) == 0:
+        if iteration % 100 == 0:
             wasted_time = time.time() - s
             rest = (shared_cfg["iteration"] -
                     iteration) / 100 * wasted_time / 60
-            print(
-                "iteration [{}/{}] cls loss : {:.6e}, SSL loss : {:.6e},"
-                "coef : {:.5e}, time : {:.3f} iter/sec, rest : {:.3f} min, lr : {}"
-                .format(iteration, shared_cfg["iteration"], cls_loss.item(),
-                        ssl_loss.item(), coef, 100 / wasted_time, rest,
-                        optimizer.param_groups[0]["lr"]),
-                "\r",
-                end="")
+            logger.info(
+                "iteration [{}/{}] cls loss : {:.6e}, SSL loss : {:.6e}, coef "
+                ": {:.5e}, time : {:.3f} iter/sec, rest : {:.3f} min, lr : {}".
+                format(iteration, shared_cfg["iteration"], train_cls_loss.avg,
+                       train_ssl_loss.avg, coef, 100 / wasted_time, rest,
+                       optimizer.param_groups[0]["lr"]))
+            writer.add_scalar('train/cls_loss', train_cls_loss.avg, iteration)
+            writer.add_scalar('train/ssl_loss', train_ssl_loss.avg, iteration)
+            writer.add_scalar('train/coef', coef, iteration)
+            writer.add_scalar('train/lr', optimizer.param_groups[0]["lr"],
+                              iteration)
             s = time.time()
 
         # validation
@@ -246,8 +274,7 @@ def main():
                 args.validation) == 0 or iteration == shared_cfg["iteration"]:
             with torch.no_grad():
                 model.eval()
-                print()
-                print("### validation ###")
+                logger.info("### validation ###")
                 sum_acc = 0.
                 s = time.time()
                 for j, data in enumerate(val_loader):
@@ -261,7 +288,7 @@ def main():
                     sum_acc += (pred_label == target).float().sum()
                     if ((j + 1) % 10) == 0:
                         d_p_s = 10 / (time.time() - s)
-                        print(
+                        logger.info(
                             "[{}/{}] time : {:.1f} data/sec, rest : {:.2f} sec"
                             .format(j + 1, len(val_loader), d_p_s,
                                     (len(val_loader) - j - 1) / d_p_s),
@@ -269,11 +296,11 @@ def main():
                             end="")
                         s = time.time()
                 acc = sum_acc / float(len(val_dataset))
-                print()
-                print("validation accuracy : {}".format(acc))
+                logger.info("validation accuracy : {}".format(acc))
+                writer.add_scalar('validation/accuracy', acc, iteration)
                 # test
                 if maximum_val_acc < acc:
-                    print("### test ###")
+                    logger.info("### test ###")
                     maximum_val_acc = acc
                     sum_acc = 0.
                     s = time.time()
@@ -286,7 +313,7 @@ def main():
                         sum_acc += (pred_label == target).float().sum()
                         if ((j + 1) % 10) == 0:
                             d_p_s = 100 / (time.time() - s)
-                            print(
+                            logger.info(
                                 "[{}/{}] time : {:.1f} data/sec, rest : {:.2f} "
                                 "sec".format(j + 1, len(test_loader), d_p_s,
                                              (len(test_loader) - j - 1) /
@@ -294,17 +321,18 @@ def main():
                                 "\r",
                                 end="")
                             s = time.time()
-                    print()
                     test_acc = sum_acc / float(len(test_dataset))
-                    print("test accuracy : {}".format(test_acc))
-                    # torch.save(model.state_dict(), os.path.join(args.output, "best_model.pth"))
+                    logger.info("test accuracy : {}".format(test_acc))
+                    writer.add_scalar('test/accuracy', test_acc, iteration)
+                    # torch.save(model.state_dict(),
+                    #            os.path.join(save_path, "best_model.pth"))
             model.train()
             s = time.time()
         # lr decay
         if iteration == shared_cfg["lr_decay_iter"]:
             optimizer.param_groups[0]["lr"] *= shared_cfg["lr_decay_factor"]
 
-    print("test acc : {}".format(test_acc))
+    logger.info("final test acc : {}".format(test_acc))
     condition["test_acc"] = test_acc.item()
 
     exp_name += str(int(time.time()))  # unique ID

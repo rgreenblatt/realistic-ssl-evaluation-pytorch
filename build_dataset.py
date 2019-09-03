@@ -36,9 +36,9 @@ def split_l_u(train_set, n_labels):
     u_images = []
     u_labels = []
     for c in classes:
-        cls_mask = (np.unique(train_set["labels"]) == c)
+        cls_mask = train_set["labels"] == c
         c_images = train_set["images"][cls_mask]
-        c_labels = np.unique(train_set["labels"])[cls_mask]
+        c_labels = train_set["labels"][cls_mask]
         l_images += [c_images[:n_labels_per_cls]]
         l_labels += [c_labels[:n_labels_per_cls]]
         u_images += [c_images[n_labels_per_cls:]]
@@ -103,75 +103,90 @@ def zca_normalization(images, mean, decomp):
     return images.reshape(n_data, height, width, channels)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed",
-                        "-s",
-                        default=1,
-                        type=int,
-                        help="random seed")
+def get_dataset_path(dataset, seed, nlabels):
+    return os.path.join(_DATA_DIR, dataset,
+                        "seed_{}_nlabels_{}".format(seed, nlabels))
+
+
+def build_dataset(dataset, seed=1, nlabels=1000, force_regenerate=False):
+    rng = np.random.RandomState(seed)
+
+    dataset_path = get_dataset_path(dataset, seed, nlabels)
+    if not os.path.exists(dataset_path) or force_regenerate:
+        os.makedirs(dataset_path)
+        validation_count = COUNTS[dataset]["valid"]
+
+        extra_set = None  # In general, there won't be extra data.
+        if dataset == "svhn":
+            train_set, test_set, extra_set = _load_svhn()
+        elif dataset == "cifar10":
+            train_set, test_set = _load_cifar10()
+            train_set["images"] = gcn(train_set["images"])
+            test_set["images"] = gcn(test_set["images"])
+            mean, zca_decomp = get_zca_normalization_param(train_set["images"])
+            train_set["images"] = zca_normalization(train_set["images"], mean,
+                                                    zca_decomp)
+            test_set["images"] = zca_normalization(test_set["images"], mean,
+                                                   zca_decomp)
+            # N x H x W x C -> N x C x H x W
+            train_set["images"] = np.transpose(train_set["images"],
+                                               (0, 3, 1, 2))
+            test_set["images"] = np.transpose(test_set["images"], (0, 3, 1, 2))
+
+        # permute index of training set
+        indices = rng.permutation(len(train_set["images"]))
+        train_set["images"] = train_set["images"][indices]
+        train_set["labels"] = train_set["labels"][indices]
+
+        if extra_set is not None:
+            extra_indices = rng.permutation(len(extra_set["images"]))
+            extra_set["images"] = extra_set["images"][extra_indices]
+            extra_set["labels"] = extra_set["labels"][extra_indices]
+
+        # split training set into training and validation
+        train_images = train_set["images"][validation_count:]
+        train_labels = train_set["labels"][validation_count:]
+        validation_images = train_set["images"][:validation_count]
+        validation_labels = train_set["labels"][:validation_count]
+        validation_set = {
+            "images": validation_images,
+            "labels": validation_labels
+        }
+        train_set = {"images": train_images, "labels": train_labels}
+
+        # split training set into labeled data and unlabeled data
+        l_train_set, u_train_set = split_l_u(train_set, nlabels)
+
+        np.save(os.path.join(dataset_path, "l_train"), l_train_set)
+        np.save(os.path.join(dataset_path, "u_train"), u_train_set)
+        np.save(os.path.join(dataset_path, "val"), validation_set)
+        np.save(os.path.join(dataset_path, "test"), test_set)
+        if extra_set is not None:
+            np.save(os.path.join(dataset_path, "extra"), extra_set)
+
+def add_args_to_parser(parser):
     parser.add_argument("--dataset",
                         "-d",
                         default="svhn",
                         type=str,
                         help="dataset name : [svhn, cifar10]")
+    parser.add_argument("--seed",
+                        "-s",
+                        default=1,
+                        type=int,
+                        help="random seed")
     parser.add_argument("--nlabels",
                         "-n",
                         default=1000,
                         type=int,
                         help="the number of labeled data")
+
+def main():
+    parser = argparse.ArgumentParser()
+    add_args_to_parser(parser)
     args = parser.parse_args()
 
-    rng = np.random.RandomState(args.seed)
-
-    validation_count = COUNTS[args.dataset]["valid"]
-
-    extra_set = None  # In general, there won't be extra data.
-    if args.dataset == "svhn":
-        train_set, test_set, extra_set = _load_svhn()
-    elif args.dataset == "cifar10":
-        train_set, test_set = _load_cifar10()
-        train_set["images"] = gcn(train_set["images"])
-        test_set["images"] = gcn(test_set["images"])
-        mean, zca_decomp = get_zca_normalization_param(train_set["images"])
-        train_set["images"] = zca_normalization(train_set["images"], mean,
-                                                zca_decomp)
-        test_set["images"] = zca_normalization(test_set["images"], mean,
-                                               zca_decomp)
-        # N x H x W x C -> N x C x H x W
-        train_set["images"] = np.transpose(train_set["images"], (0, 3, 1, 2))
-        test_set["images"] = np.transpose(test_set["images"], (0, 3, 1, 2))
-
-    # permute index of training set
-    indices = rng.permutation(len(train_set["images"]))
-    train_set["images"] = train_set["images"][indices]
-    train_set["labels"] = train_set["labels"][indices]
-
-    if extra_set is not None:
-        extra_indices = rng.permutation(len(extra_set["images"]))
-        extra_set["images"] = extra_set["images"][extra_indices]
-        extra_set["labels"] = extra_set["labels"][extra_indices]
-
-    # split training set into training and validation
-    train_images = train_set["images"][validation_count:]
-    train_labels = train_set["labels"][validation_count:]
-    validation_images = train_set["images"][:validation_count]
-    validation_labels = train_set["labels"][:validation_count]
-    validation_set = {"images": validation_images, "labels": validation_labels}
-    train_set = {"images": train_images, "labels": train_labels}
-
-    # split training set into labeled data and unlabeled data
-    l_train_set, u_train_set = split_l_u(train_set, args.nlabels)
-
-    if not os.path.exists(os.path.join(_DATA_DIR, args.dataset)):
-        os.mkdir(os.path.join(_DATA_DIR, args.dataset))
-
-    np.save(os.path.join(_DATA_DIR, args.dataset, "l_train"), l_train_set)
-    np.save(os.path.join(_DATA_DIR, args.dataset, "u_train"), u_train_set)
-    np.save(os.path.join(_DATA_DIR, args.dataset, "val"), validation_set)
-    np.save(os.path.join(_DATA_DIR, args.dataset, "test"), test_set)
-    if extra_set is not None:
-        np.save(os.path.join(_DATA_DIR, args.dataset, "extra"), extra_set)
+    build_dataset(args.dataset, args.seed, args.nlabels, True)
 
 
 if __name__ == "__main__":

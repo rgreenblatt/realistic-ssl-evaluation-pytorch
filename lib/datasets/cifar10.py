@@ -4,7 +4,7 @@ import numpy as np
 
 class CIFAR10:
     def __init__(self, root, split="l_train"):
-        self.dataset = np.load(os.path.join(root, "cifar10", split + ".npy"),
+        self.dataset = np.load(os.path.join(root, split + ".npy"),
                                allow_pickle=True).item()
 
     def __getitem__(self, idx):

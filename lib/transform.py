@@ -10,7 +10,7 @@ class transform:
         self.flip = flip
         self.r_crop = r_crop
         self.g_noise = g_noise
-        print("holizontal flip : {}, random crop : {}, gaussian noise : {}".
+        print("horizontal flip : {}, random crop : {}, gaussian noise : {}".
               format(self.flip, self.r_crop, self.g_noise))
 
     def __call__(self, x):
