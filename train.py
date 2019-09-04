@@ -291,9 +291,7 @@ def main():
                         logger.info(
                             "[{}/{}] time : {:.1f} data/sec, rest : {:.2f} sec"
                             .format(j + 1, len(val_loader), d_p_s,
-                                    (len(val_loader) - j - 1) / d_p_s),
-                            "\r",
-                            end="")
+                                    (len(val_loader) - j - 1) / d_p_s))
                         s = time.time()
                 acc = sum_acc / float(len(val_dataset))
                 logger.info("validation accuracy : {}".format(acc))
@@ -317,9 +315,7 @@ def main():
                                 "[{}/{}] time : {:.1f} data/sec, rest : {:.2f} "
                                 "sec".format(j + 1, len(test_loader), d_p_s,
                                              (len(test_loader) - j - 1) /
-                                             d_p_s),
-                                "\r",
-                                end="")
+                                             d_p_s))
                             s = time.time()
                     test_acc = sum_acc / float(len(test_dataset))
                     logger.info("test accuracy : {}".format(test_acc))
